@@ -295,11 +295,6 @@ channel_conf::channel_conf(MemCadParameters * memcad_params, const vector<int>& 
 		capacity += dimm_cap[i];
 	}
 	
-	// updating bandwidth
-	if(capacity>0)
-		bandwidth =0;
-	
-		//bandwidth = MemoryParameters::bandwidth_load[memcad_params->io_type][4-num_dimm_per_channel];
 	// updating channel cost
 	cost =0;
 	for(int i=0;i<5;++i)
@@ -312,14 +307,19 @@ channel_conf::channel_conf(MemCadParameters * memcad_params, const vector<int>& 
 
 void channel_conf::calc_power()
 {
-	
+	if(num_dimm_per_channel == 0 || bandwidth == 0)
+	{
+		energy_per_read = energy_per_write = energy_per_access = 0;
+		return;
+	}
+
 	double read_ratio = memcad_params->rd_2_wr_ratio/(1.0+memcad_params->rd_2_wr_ratio);
 	double write_ratio = 1.0/(1.0+memcad_params->rd_2_wr_ratio);
 	Mem_IO_type current_io_type = memcad_params->io_type;
 	double capacity_ratio = (capacity/(double) memcad_params->capacity );
-	
+
 	double T_BURST = 4; // memory cycles
-	
+
 	energy_per_read = MemoryParameters::io_energy_read[current_io_type][type][num_dimm_per_channel-1][bw_index(current_io_type,bandwidth)];
 	energy_per_read /= (bandwidth/T_BURST);
 	

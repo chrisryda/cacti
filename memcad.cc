@@ -137,7 +137,10 @@ void find_all_channels(MemCadParameters * memcad_params)
 					dimm_cap.push_back(DIMM_size[d1]); if(d1>0) num_dimm_per_channel++;
 					dimm_cap.push_back(DIMM_size[d2]); if(d2>0) num_dimm_per_channel++;
 					dimm_cap.push_back(DIMM_size[d3]); if(d3>0) num_dimm_per_channel++;
-					
+
+					if((DIMM_size[d1]+DIMM_size[d2]+DIMM_size[d3])==0)
+						continue;
+
 					int max_index = bw_index(current_io_type, MemoryParameters::bandwidth_load[current_io_type][4-num_dimm_per_channel]);
 					for(int bw_id=0;bw_id<=max_index; ++bw_id)
 					{
@@ -147,10 +150,7 @@ void find_all_channels(MemCadParameters * memcad_params)
 						{
 							memcad_all_channels->push_back(new_channel);
 						}
-						
-						if((DIMM_size[d1]+DIMM_size[d2]+DIMM_size[d3])==0)
-							continue;
-						
+
 						if(memcad_params->low_power_permitted)
 						{
 							new_channel = new channel_conf(memcad_params, dimm_cap, bandwidth, LRDIMM, true);
@@ -159,7 +159,7 @@ void find_all_channels(MemCadParameters * memcad_params)
 								memcad_all_channels->push_back(new_channel);
 							}
 						}
-						
+
 					}
 				}
 				
@@ -377,6 +377,8 @@ void find_bobs_recursive(MemCadParameters * memcad_params,int start,int end,int 
 void find_all_bobs(MemCadParameters * memcad_params)
 {
 	memcad_all_bobs = new vector<bob_conf*>();
+	if(memcad_all_channels->empty())
+		return;
 	if(memcad_params->mirror_in_bob)
 	{
 		for(unsigned int i=0;i<memcad_all_channels->size();++i)
@@ -390,10 +392,10 @@ void find_all_bobs(MemCadParameters * memcad_params)
 	}
 	else if(memcad_params->same_bw_in_bob)
 	{
-		sort(memcad_all_channels->begin(), memcad_all_channels->end(), compare_channels_bw); 
+		sort(memcad_all_channels->begin(), memcad_all_channels->end(), compare_channels_bw);
 		vector<int> start_index; start_index.push_back(0);
 		vector<int> end_index;
-		int last_bw =(*memcad_all_channels)[0]->bandwidth;
+		int last_bw = memcad_all_channels->front()->bandwidth;
 		for(unsigned int i=0;i< memcad_all_channels->size();i++)
 		{
 			if(last_bw!=(*memcad_all_channels)[i]->bandwidth)

@@ -132,9 +132,9 @@ const double WmuxdrvNANDp = 0;
 #define EPSILON3 0.6
 
 
-#define MINSUBARRAYROWS 16 //For simplicity in modeling, for the row decoding structure, we assume
-//that each row predecode block is composed of at least one 2-4 decoder. When the outputs from the
-//row predecode blocks are combined this means that there are at least 4*4=16 row decode outputs
+#define MINSUBARRAYROWS 4 //Physical minimum for a single-stage 2-4 row pre-decoder (4 outputs).
+//The original value of 16 assumed two cascaded 2-4 decoders (4x4=16), which over-constrains
+//small arrays such as issue queues or register files with fewer than 32 entries.
 #define MAXSUBARRAYROWS 262144 //Each row predecode block produces a max of 2^9 outputs. So
 //the maximum number of row decode outputs will be 2^9*2^9
 #define MINSUBARRAYCOLS 2

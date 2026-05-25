@@ -63,7 +63,22 @@ InputParameter::InputParameter()
  cl_power_gated(false),
  interconect_power_gated(false),
  power_gating(false),
- cl_vertical (true)
+ cl_vertical (true),
+ num_bobs(4),
+ capacity(400),
+ num_channels_per_bob(2),
+ first_metric(Cost),
+ second_metric(Bandwidth),
+ third_metric(Energy),
+ dimm_model(ALL),
+ low_power_permitted(false),
+ load(0.9),
+ row_buffer_hit_rate(1.0),
+ rd_2_wr_ratio(2.0),
+ same_bw_in_bob(true),
+ mirror_in_bob(true),
+ total_power(false),
+ verbose(false)
 {
 
 }

@@ -781,15 +781,6 @@ void TechnologyParameter::find_upper_and_lower_tech(double technology, int &tech
 		tech_hi = 22;
 		in_file_hi = "tech_params/22nm.dat";
 	}
-	/**
-	else if (technology < 22 && technology > 16)
-	{
-		tech_lo = 22;
-		in_file_lo = "tech_params/22nm.dat";
-		tech_hi = 16;
-		in_file_hi = "tech_params/16nm.dat";
-	}
-	**/
 	else
 	{
 		cout<<"Invalid technology nodes"<<endl;
