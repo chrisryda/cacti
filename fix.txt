@@ -1,0 +1,125 @@
+CACTI 7 — Source Modifications and Rationale
+============================================
+
+CACTI 7 was released in 2015 and has not been actively maintained since. It
+ships with several latent bugs that only surface under specific conditions.
+None of these are theoretical edge cases — they all triggered immediately on
+the provided sample configs or on the IQ modeling task.
+
+
+Bug 1 — Uninitialized InputParameter members (io.cc)
+-----------------------------------------------------
+What broke: Running any cache config (like ddr3_cache.cfg) crashed with a
+std::vector bounds assertion deep in the MemCad subsystem.
+
+Root cause: InputParameter::InputParameter() only initialized 7 of its members
+in its constructor initializer list. The MemCad-specific fields — num_bobs,
+capacity, num_channels_per_bob, mirror_in_bob, same_bw_in_bob, first_metric,
+second_metric, third_metric, dimm_model, etc. — were left with whatever garbage
+happened to be on the stack. When CACTI parsed a cache config that did not
+include MemCad parameters (most configs do not), those fields kept their garbage
+values and caused downstream chaos.
+
+Fix: Added all MemCad fields to the constructor initializer list with sensible
+defaults (matching what the config parser would have set had the keys been
+present).
+
+
+Bug 2 — Inverted bandwidth zeroing (memcad_parameters.cc, channel_conf constructor)
+------------------------------------------------------------------------------------
+What broke: No valid memory channels were ever generated, so the MemCad
+optimizer had nothing to work with.
+
+Root cause: The channel_conf constructor contained:
+
+    if(capacity > 0) bandwidth = 0;
+
+This zeroed the bandwidth of every channel that had any capacity — i.e., every
+valid channel. This is almost certainly a logic inversion: the intent was
+probably if(capacity == 0). As written it rendered the entire channel
+enumeration useless.
+
+Fix: Removed the line.
+
+
+Bug 3 — Out-of-bounds array access in calc_power() (memcad_parameters.cc)
+--------------------------------------------------------------------------
+What broke: Memory corruption / crash when MemCad tried to compute power for a
+channel with zero DIMMs.
+
+Root cause: calc_power() accesses io_energy_read[...][num_dimm_per_channel - 1][...].
+When num_dimm_per_channel == 0 (a zero-DIMM channel, which the enumeration loop
+can produce), this becomes index -1 into a static C array — undefined behavior
+that manifested as the vector<channel_conf*>::operator[] assertion failure seen
+in the original crash.
+
+Fix: Added an early return at the top of calc_power():
+
+    if(num_dimm_per_channel == 0 || bandwidth == 0) {
+        energy_per_read = energy_per_write = energy_per_access = 0;
+        return;
+    }
+
+
+Bug 4 — LRDIMM zero-DIMM skip in wrong place (memcad.cc, find_all_channels())
+-------------------------------------------------------------------------------
+What broke: Contributed to the same crash — the zero-DIMM guard existed but was
+inside the bandwidth loop, after bw_index() had already been called with
+num_dimm_per_channel == 0, which caused bandwidth_load[type][4 - 0] =
+bandwidth_load[type][4] — a one-past-the-end access on a size-4 array.
+
+Fix: Moved the if(sum == 0) continue; check to before the bw_index() call, so
+the zero-DIMM case is rejected before any array indexing happens.
+
+
+Bug 5 — Empty vector access in find_all_bobs() (memcad.cc)
+-----------------------------------------------------------
+What broke: If no valid channels were generated (e.g., due to bugs 2/3
+filtering everything out), find_all_bobs() immediately accessed
+(*memcad_all_channels)[0] without checking whether the vector was empty.
+
+Fix: Added an early return:
+
+    if(memcad_all_channels->empty())
+        return;
+
+Also changed the subsequent [0] access to .front() for clarity.
+
+
+Change 6 — MINSUBARRAYROWS lowered from 16 to 4 (const.h)
+----------------------------------------------------------
+This is not a bug fix per se, but a modeling constraint relaxation needed for
+the IQ sweep task.
+
+What broke: All IQ configurations with fewer than 32 entries silently failed —
+CACTI reported no valid organization and moved on.
+
+Root cause: MINSUBARRAYROWS 16 enforced that every subarray must have at least
+16 rows. This value assumed a two-level 2-4 row pre-decoder (4x4 = 16 outputs),
+which is reasonable for large caches. For a small SRAM like an 8-entry IQ, the
+entire array has only 8 rows; even with the minimum subarray partition (Ndbl=2),
+each subarray has 4 rows — which is a valid single-stage 2-4 decoder topology.
+The constraint of 16 was simply over-conservative for small structures.
+
+Fix: Changed to MINSUBARRAYROWS 4, the physical minimum for a single-stage
+pre-decoder. This lets CACTI successfully model arrays as small as 8 entries.
+
+
+Summary
+-------
+File                    Change                                          Category
+----                    ------                                          --------
+io.cc                   Initialize all InputParameter MemCad fields     Latent UB / crash
+memcad_parameters.cc    Remove bandwidth=0 on valid channels            Logic inversion
+memcad_parameters.cc    Guard calc_power() against zero-DIMM channels   Out-of-bounds access
+memcad.cc               Move zero-DIMM skip before bw_index() call      Out-of-bounds access
+memcad.cc               Guard find_all_bobs() against empty channel list Null-like dereference
+const.h                 Lower MINSUBARRAYROWS 16->4                     Over-restrictive constraint
+
+Bugs 1-5 are straightforward defects — uninitialized memory, an inverted
+condition, and missing bounds checks — that were never caught because the MemCad
+path was apparently only ever tested with complete MemCad config files where the
+fields were parsed from disk. The MINSUBARRAYROWS change is a deliberate
+modeling trade-off: the original value was correct for caches but wrong for the
+small microarchitectural structures (register files, issue queues) that CACTI's
+RAM mode is also designed to model.
