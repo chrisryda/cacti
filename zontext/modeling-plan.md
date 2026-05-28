@@ -19,42 +19,63 @@ analysis combines them with gem5 activity counts (`dep_graph_wakeups`,
 `deltaWakeupMap` firings, dispatch/issue counts) to compute total
 activity-weighted energy at the iso-IPC `(IQ, DIQ)` operating points.
 
-The current pass calibrates everything to gem5 **non-super** mode
-(`BaseO3CPU.py` defaults, no `_apply_super_params`). Super-mode modeling
-is a future addition; see [Super-mode deferred](#super-mode-deferred-future-pass).
+The current pass calibrates everything to the **MagnaOpus** CPU class
+(`configs/sic_parvis_magna/sic_parvis.py:127-160`), which is what
+`magna.py` instantiates by default and is what the user calls "non-super"
+mode. MagnaOpus is *not* the same as `BaseO3CPU.py` defaults — see
+[Why MagnaOpus, not BaseO3CPU.py](#why-magnaopus-not-baseo3cpupy) below.
+SuperMagnaOpus (`--super` flag) is documented in
+[SuperMagnaOpus deltas](#supermagnaopus-deltas-documentation-only).
 
 ## File map
 
 | File | What it models | Notes |
 |---|---|---|
 | `iq_cam.cfg` | Main IQ tag CAM (wakeup search) | 4 B/entry, 8 RW + 8 search ports |
-| `iq_cam_payload.cfg` | Main IQ payload SRAM (issue/dispatch data) | 11 B/entry, 8 RW ports |
-| `diq_sram.cfg` | DIQ side queue (indexed) | 13 B/entry, 4 RW ports |
+| `iq_cam_payload.cfg` | Main IQ payload SRAM (issue/dispatch data) | 9 B/entry, 8 RW ports |
+| `diq_sram.cfg` | DIQ side queue (indexed) | 12 B/entry, 4 RW ports |
 | `iq_cam_sweep.sh` | Per-component sweep of tag CAM | entries ∈ {8..160} |
 | `iq_cam_payload_sweep.sh` | Per-component sweep of payload SRAM | entries ∈ {8..160} |
 | `diq_sram_sweep.sh` | Per-component sweep of DIQ | entries ∈ {8..160} |
 | `design_point_sweep.sh` | Whole-system: 54-point grid mirroring gem5 diq.sweep.sh | combines the three components; accepts `--pairs` / `--pairs-file` |
 
+## Why MagnaOpus, not BaseO3CPU.py
+
+A previous pass cited `BaseO3CPU.py` defaults (802 phys regs, 192 ROB,
+32/32 LSQ, 8-wide) as the calibration target. Those are *fallback* values
+that the user's actual sims never run. `magna.py:39-69` instantiates
+either `MagnaOpus` (default) or `SuperMagnaOpus` (`--super` flag) from
+`sic_parvis.py`. Both override ROB, LSQ, and phys-reg counts; the
+fallback values are only used by sims that don't go through magna.py.
+
+For this pass: target is **MagnaOpus**. The key deltas from BaseO3CPU
+that affect bit widths:
+
+- ROB: 192 → 352 (sic_parvis.py:137) → ROB pointer widens 8 b → 9 b
+- LQ / SQ: 32 / 32 → 128 / 72 (sic_parvis.py:140-141) → LSQ slot pointer widens 5 b → 7 b
+- PRF: 256 int + 256 fp → 280 int + 224 fp (sic_parvis.py:144-145); vec / vec-pred / mat inherit BaseO3CPU defaults (256 / 32 / 2). Total 794, still 10-bit tag.
+- Pipeline width: issue / wb / commit = 8 (sic_parvis.py:133-135); dispatch inherits BaseO3CPU = 8. Port counts unchanged.
+
 ## Bit-level entry accounting
 
-All citations are to `/home/crd/master/gem5/src/cpu/o3/BaseO3CPU.py` unless
-noted. Field widths derive from the gem5 non-super defaults:
+All citations are to `/home/crd/master/gem5/configs/sic_parvis_magna/sic_parvis.py`
+unless noted. Lines without an override fall through to `BaseO3CPU.py`.
 
 | gem5 parameter | Value | Source | Derived width |
 |---|---|---|---|
-| numPhysIntRegs  | 256 | line 175 | — |
-| numPhysFloatRegs | 256 | line 178 | — |
-| numPhysVecRegs  | 256 | line 181 | — |
-| numPhysVecPredRegs | 32 | line 182 | — |
-| numPhysMatRegs  | 2   | line 185 | — |
-| **Σ phys regs** | **802** | sum | **PRF tag = 10 bits** |
-| numROBEntries | 192 | line 190 | ROB ptr = 8 bits |
-| numIQEntries | 64 (sweep 8…160) | line 188 | — |
-| numDeltaIQEntries | 14 (sweep 0…150) | line 189 | DIQ slot ptr = 8 bits |
-| LQEntries / SQEntries | 32 / 32 | lines 143-144 | LSQ ptr = 5 bits |
-| dispatch/issue/wb width | 8 / 8 / 8 | lines 122-124 | port counts |
+| numPhysIntRegs  | 280 | sic_parvis.py:144 | — |
+| numPhysFloatRegs | 224 | sic_parvis.py:145 | — | 
+| numPhysVecRegs  | 256 | (inherited) BaseO3CPU | — |
+| numPhysVecPredRegs | 32 | (inherited) BaseO3CPU | — |
+| numPhysMatRegs  | 2   | (inherited) BaseO3CPU | — |
+| **Σ phys regs** | **794** | sum | **PRF tag = 10 bits** (2¹⁰=1024) |
+| numROBEntries | **352** | sic_parvis.py:137 | **ROB ptr = 9 bits** (2⁹=512) |
+| numIQEntries | 120 (sweep 8…160) | sic_parvis.py:138 + magna.py:46 | IQ slot ptr = 8 bits |
+| numDeltaIQEntries | 40 (sweep 0…150) | sic_parvis.py:139 + magna.py:47 | DIQ slot ptr = 8 bits |
+| LQEntries / SQEntries | **128 / 72** | sic_parvis.py:140-141 | **LSQ ptr = 7 bits** |
+| dispatch/issue/wb width | 8 / 8 / 8 | dispatch inherited; issue/wb at sic_parvis.py:133-134 | port counts |
 | OpClass count (Num_OpClass) | 77 | `cpu/op_class.hh` | OpClass = 7 bits |
-| FUs in DefaultFUPool | 25 | `cpu/o3/FuncUnitConfig.py` | FU port ID = 5 bits |
+| FUs in DefaultFUPool | 25 | `cpu/o3/FuncUnitConfig.py` (no override in MagnaOpus) | FU port ID = 5 bits |
 
 ### Regular IQ — tag CAM half (`iq_cam.cfg`)
 
@@ -77,12 +98,12 @@ writeback (ready-bit updates).
 | Destination PRF tag | 10 b | drives PRF write at writeback |
 | OpClass | 7 b | 77 op classes |
 | FU port ID | 5 b | 25 FUs in DefaultFUPool |
-| ROB pointer | 8 b | 192-entry ROB |
-| LSQ slot pointer | 5 b | 32-entry LQ or SQ (single field, type from OpClass) |
-| Immediate | 32 b | covers x86 32-bit imm and ARM B-branch (26 b) with slack |
+| ROB pointer | **9 b** | 352-entry ROB (sic_parvis.py:137) |
+| LSQ slot pointer | **7 b** | LQ=128 / SQ=72 (sic_parvis.py:140-141); single field, load/store type from OpClass |
+| Immediate | **17 b** | 16-bit value + 1 sign bit |
 | Status: valid / issued / squashed | 3 b | hardware-visible state only |
 | DIQ-consumer back-pointer | 1 + 8 = 9 b | valid bit + 8-bit DIQ slot ptr (covers DIQ up to 150 entries, gem5 sweep max); producer drives the DIQ ready-bit on completion (the indexed-wakeup mechanism replacing the simulator-only `deltaWakeupMap`) |
-| **Total payload** | **82 b → 11 B** |  |
+| **Total payload** | **70 b → 9 B** | down from 11 B after the immediate field shrank 32 → 17 b |
 
 ### DIQ entry (`diq_sram.cfg`)
 
@@ -98,11 +119,11 @@ entry, not on the consumer's DIQ entry). No CAM cells; wakeup is indexed.
 | Destination PRF tag | 10 b | |
 | OpClass | 7 b | |
 | FU port ID | 5 b | |
-| ROB pointer | 8 b | |
-| LSQ slot pointer | 5 b | DIQ holds mem ops (verified — see below) |
-| Immediate | 32 b | |
+| ROB pointer | **9 b** | 352-entry ROB (sic_parvis.py:137) |
+| LSQ slot pointer | **7 b** | LQ=128 / SQ=72 (sic_parvis.py:140-141); DIQ holds mem ops (verified — see below) |
+| Immediate | **17 b** | 16-bit value + 1 sign bit |
 | Status: valid / issued / squashed | 3 b | |
-| **Total DIQ entry** | **103 b → 13 B** | |
+| **Total DIQ entry** | **91 b → 12 B** | down from 14 B after the immediate field shrank 32 → 17 b (CACTI body: `-block size` 14→12, bus 112→96) |
 
 ### What is NOT in any entry
 
@@ -135,7 +156,7 @@ CACTI offers only two cache types:
 - `cache type ram` — pure indexed SRAM, no associative search
 
 There's no hybrid "narrow-CAM + wide-SRAM" cache type. If you forced the
-whole 15 B entry into one CAM, every byte of the payload would be modeled
+whole 13 B entry into one CAM, every byte of the payload would be modeled
 as expensive CAM cells (~2× area vs SRAM, plus match-line logic on every
 bit) — massively overstating cost. If you forced it into a single RAM,
 you'd lose the associative search entirely. Two configs is the only way
@@ -151,7 +172,7 @@ So a real IQ is physically:
 
 - **Tag CAM** — 4 B wide (3 src tags × 10 bits = 30 bits), CAM cells, with
   8 search ports for the 8 result broadcast buses
-- **Payload SRAM** — 11 B wide, plain SRAM cells, no search ports
+- **Payload SRAM** — 9 B wide (70 b), plain SRAM cells, no search ports
 
 Different cell types, different port counts, different access patterns.
 They're already separate arrays in the floorplan, so modeling them as
@@ -202,34 +223,46 @@ shrinks (smaller CAM, fewer entries to broadcast against), and the cheaper
 document is what turns those raw coefficients plus gem5 activity counts
 into a single energy number per design point.
 
-## Why this pass tightened the entry widths
+## Entry-width history
 
-The previous calibration sized entries at 22 B (regular IQ) and 18 B (DIQ)
-based on byte-rounded estimates ("~1 B for a 1-bit ready bit", "padded to
-18 B alignment with microarch metadata"). The padding hid ~70 bits of
-slack per entry, systematically overstating area, leakage, and per-access
-dynamic energy.
+Three calibration cleanups have happened, in chronological order:
 
-This pass computed every field to its actual bit width (tables above),
-summed once, then rounded the total to bytes. Result:
+1. **Bit-level tightening pass.** The original configs sized entries at
+   22 B (regular IQ) and 18 B (DIQ) based on byte-rounded estimates ("~1 B
+   for a 1-bit ready bit", "padded to 18 B alignment with microarch
+   metadata"). That padding hid ~70 bits of slack per entry. A subsequent
+   pass computed every field to its actual bit width, summed once, then
+   rounded the total to bytes — yielding 11 B (payload) and 13 B (DIQ)
+   under a BaseO3CPU calibration.
 
-| Structure | Old | New | Shrink |
-|---|---|---|---|
-| Regular IQ tag CAM | 4 B | 4 B | 0% (already tight) |
-| Regular IQ payload | 18 B | 11 B | 39% |
-| DIQ entry | 18 B | 13 B | 28% |
-| Total regular IQ entry | 22 B | 15 B | 32% |
+2. **MagnaOpus recalibration.** The bit-level pass cited `BaseO3CPU.py`
+   line numbers as the source for ROB / LSQ widths. But the user's actual
+   sims run MagnaOpus, which has 352 ROB and LQ=128 / SQ=72. That widens
+   ROB pointer (8→9 b) and LSQ pointer (5→7 b); payload stayed at 11 B
+   after rounding, DIQ grew to 14 B.
 
-The CAM was already correctly sized at 4 B (30 bits + 2 bits of
-byte-alignment slack). The payload and DIQ entries are where the wins are.
+3. **17-bit immediate (this pass).** Workload-driven decision: the
+   immediate field shrinks 32 → 17 b (16-bit value + 1 sign bit). That
+   drops payload 85 → 70 b (11 → 9 B) and DIQ 106 → 91 b (14 → 12 B).
 
-## Two factual corrections in this pass
+| Structure | Original | Bit-level | MagnaOpus | 17-b imm (this pass) |
+|---|---|---|---|---|
+| IQ tag CAM | 4 B | 4 B | 4 B | 4 B |
+| IQ payload | 18 B | 11 B (81 b) | 11 B (85 b) | **9 B (70 b)** |
+| DIQ entry | 18 B | 13 B (103 b) | 14 B (106 b) | **12 B (91 b)** |
+| Total regular IQ entry | 22 B | 15 B | 15 B | **13 B** |
+
+The CAM has always been tight at 4 B. Payload and DIQ have moved with
+field-width assumptions; in this pass the dominant change is the
+immediate field.
+
+## Factual corrections carried over from prior passes
 
 ### 1. The DIQ holds memory operations
 
-The previous documentation (`res-goals.md:33` and the prior
-`modeling-plan.md`) stated that memory operations are never routed to the
-DIQ. That claim is **wrong**. Verified at:
+The original documentation (`res-goals.md:33` and earlier `modeling-plan.md`)
+stated that memory operations are never routed to the DIQ. That claim is
+**wrong**. Verified at:
 
 - `inst_queue.cc:599-704` (`insert()`) — no `!isMemRef()` guard
 - `iew.cc:937-949` (`dispatchInsts`) — delta candidates bypass a full IQ
@@ -237,22 +270,41 @@ DIQ. That claim is **wrong**. Verified at:
 - `inst_queue.cc:1216-1230` — mem delta insts stay in `deltaInstList` past
   wakeup until commit/squash
 
-Consequence: the DIQ entry carries an LSQ slot pointer (+5 bits) just like
-the regular IQ payload.
+Consequence: the DIQ entry carries an LSQ slot pointer (+7 bits under
+MagnaOpus calibration) just like the regular IQ payload.
 
-### 2. Port counts now match gem5 non-super
+### 2. Calibrated to MagnaOpus, not BaseO3CPU.py
 
-The previous calibration used "Sunny Cove-ish" ports (5 RW + 10 search on
-the tag CAM, 10 RW on the payload) borrowed from Intel's silicon. gem5's
-non-super defaults are different: `fetch/decode/rename/dispatch/issue/wb/
-commit = 8` (`BaseO3CPU.py:92-131`). This pass aligns CACTI to what gem5
-actually runs:
+Earlier passes cited `BaseO3CPU.py` line numbers as the source for ROB,
+LSQ, and PRF widths. But `magna.py` (the user's actual sim entrypoint)
+instantiates `MagnaOpus` / `SuperMagnaOpus` from `sic_parvis.py`, which
+overrides several of those defaults. Specifically MagnaOpus has 352 ROB
+(not 192) and LQ=128 / SQ=72 (not 32/32), which widens per-entry pointers:
 
-| Structure | Old ports | New ports |
+| Field | BaseO3CPU calibration | MagnaOpus calibration |
 |---|---|---|
-| IQ tag CAM | 5 RW + 10 search | **8 RW + 8 search** |
-| IQ payload | 10 RW | **8 RW** |
-| DIQ | 4 RW | 4 RW (unchanged) |
+| ROB pointer | 8 b (192 ROB) | **9 b** (352 ROB) |
+| LSQ slot pointer | 5 b (32/32) | **7 b** (128/72) |
+| PRF tag | 10 b (802 regs) | 10 b (794 regs — coincidentally same after rounding) |
+
+Effect on entry widths (under the BaseO3CPU calibration that preceded
+this one — does not include the 17-bit immediate change):
+- IQ payload: 81 → 85 b → still 11 B (byte rounding absorbs it)
+- DIQ entry: 103 → 106 b → **13 → 14 B** (CACTI body change)
+- IQ tag CAM: 30 → 30 b → 4 B (unchanged)
+
+(After the 17-bit immediate change in this pass: payload 70 b → 9 B and
+DIQ entry 91 b → 12 B; see [Entry-width history](#entry-width-history).)
+
+Ports are unchanged because MagnaOpus pipeline width is still 8
+(`issue/wb/commit = 8` at sic_parvis.py:133-135; dispatch inherited from
+BaseO3CPU = 8):
+
+| Structure | Ports |
+|---|---|
+| IQ tag CAM | 8 RW + 8 search |
+| IQ payload | 8 RW |
+| DIQ | 4 RW (side-queue traffic, not pipeline-width) |
 
 The DIQ stays at 4 RW because it's a side queue — its traffic is the
 delta-candidate fraction of dispatch (≈2/cycle peak) plus the woken
@@ -263,11 +315,11 @@ fraction of issue (≈2/cycle peak), not pipeline-width.
 The hardware DIQ wakeup operation is a single-bit flip of the delta
 source's ready bit — not a full payload write. The full row-write energy
 overstates wakeup cost by 10–20× (bitline drivers don't scale perfectly
-linearly with bit count, but flipping 1 bit ≠ flipping 104).
+linearly with bit count, but flipping 1 bit ≠ flipping 96).
 
 `design_point_sweep.sh` emits a separate `diq_wakeup_e_nJ` column computed
-as `diq_write_e_nJ / (diq_entry_bytes × 8)` — at the 13 B default,
-divisor = 104. This is an approximation, but ~10× closer to truth than
+as `diq_write_e_nJ / (diq_entry_bytes × 8)` — at the 12 B default,
+divisor = 96. This is an approximation, but ~10× closer to truth than
 charging the full row write. The full-row `diq_write_e_nJ` is still
 emitted for actual dispatch writes (which *do* write the full entry).
 
@@ -281,39 +333,46 @@ diq_dyn_E = N_dispatch_to_diq * diq_write_e
 
 where `N_diq_wakeup` is the gem5 count of `deltaWakeupMap` firings.
 
-## Super-mode deferred (future pass)
+## SuperMagnaOpus deltas (documentation only)
 
-gem5's `--super` mode (`configs/sic_parvis_magna/default.py:_apply_super_params`)
-applies a different set of overrides:
+For reference. The `--super` flag on `magna.py` instantiates
+`SuperMagnaOpus` (`sic_parvis.py:183-217`) instead of `MagnaOpus`. The
+bit-width deltas relative to the MagnaOpus calibration this file targets:
 
-| Param | Non-super | Super |
-|---|---|---|
-| numPhysIntRegs / FloatRegs | 256 / 256 | 512 / 512 |
-| Total phys regs | 802 | 1314 |
-| **PRF tag width** | **10 b** | **11 b** |
-| numROBEntries | 192 | 512 |
-| **ROB ptr width** | **8 b** | **9 b** |
-| LQEntries / SQEntries | 32 / 32 | 512 / 512 |
-| **LSQ ptr width** | **5 b** | **9 b** |
-| fetch/decode/rename/dispatch width | 8 | 10 |
-| issueWidth / wbWidth / commitWidth | 8 | 12 |
+| Param | MagnaOpus | SuperMagnaOpus | Source |
+|---|---|---|---|
+| Σ phys regs | 794 → **10 b** | 1314 (512+512+256+32+2) → **11 b** | sic_parvis.py:200-201 (int=fp=512); vec/vp/mat inherited |
+| numROBEntries | 352 → 9 b | 512 → 9 b (unchanged) | sic_parvis.py:194 |
+| LQ / SQ | 128 / 72 → 7 b | 512 / 512 → **9 b** | sic_parvis.py:197-198 |
+| dispatchWidth | 8 (inherited) | **10** | sic_parvis.py:189 |
+| issueWidth / wbWidth | 8 / 8 | **12 / 12** | sic_parvis.py:190-191 |
+| FU count | 25 (DefaultFUPool) → 5 b | 30 (SuperMagnaOpusFUPool) → 5 b (still fits) | sic_parvis.py:166-179 |
 
-For super mode the tag CAM would grow to 3 × 11 = 33 bits → still 4 B
-(byte-aligned). The payload would grow to roughly:
-3 + 11 + 7 + 5 + 9 + 9 + 32 + 3 + 8 = 87 bits → 11 B (also unchanged
-because of byte alignment). Port counts would shift to 10 RW + 12 search
-on the tag CAM, 12 RW on the payload.
+Recomputed entry widths under SuperMagnaOpus (with the 17-bit immediate
+this pass adopted):
+
+- IQ tag CAM: 3 × 11 = 33 b → **5 B** (was 4 B under MagnaOpus)
+- IQ payload: 3 + 11 + 7 + 5 + 9 + 9 + 17 + 3 + (1+8) = **73 b → 10 B**
+  (vs 9 B under MagnaOpus — the wider PRF / LSQ pointers push it past
+  the 8-b/72-b boundary)
+- DIQ entry: 33 + 3 + 11 + 7 + 5 + 9 + 9 + 17 + 3 = **97 b → 13 B**
+  (vs 12 B under MagnaOpus)
+
+So a Super recalibration changes **port counts** (8→12 search, 8→10/12
+RW), the **tag CAM block size** (4→5 B), the payload (9→10 B), and the
+DIQ (12→13 B).
 
 The per-component sweep scripts already accept port-count args, so a
-super-mode run is a one-liner today:
+SuperMagnaOpus run is a one-liner today (no config-file fork needed):
 
 ```
-./iq_cam_sweep.sh 4 10 12 22         # tag_width, rw_ports, search_ports, tech_nm
-./iq_cam_payload_sweep.sh 11 12 22   # payload_width, ports, tech_nm
+./iq_cam_sweep.sh 5 10 12 22         # tag_width=5, rw=10, search=12, tech_nm
+./iq_cam_payload_sweep.sh 10 12 22   # payload_width=10, ports=12, tech_nm
+./diq_sram_sweep.sh 13 4 22          # entry=13, ports=4 (unchanged), tech
 ```
 
-A future `--super` flag on `design_point_sweep.sh` would flip the port
-constants in one place. Not done in this pass.
+A future `--super` flag on `design_point_sweep.sh` would flip the port and
+tag-CAM-byte constants in one place. Not done in this pass.
 
 ## Known limitations (deferred)
 
@@ -344,7 +403,7 @@ constants in one place. Not done in this pass.
    energy, but a more rigorous model would distinguish bitline driver
    energy from wordline + decode energy.
 
-5. **DIQ peripheral overhead vs cell storage.** Even at 13 B / 4 ports,
+5. **DIQ peripheral overhead vs cell storage.** Even at 12 B / 4 ports,
    small DIQ arrays carry non-trivial peripheral leakage because each port
    costs decode + sense-amp logic. This is real — a property of having a
    *separate* array at all — but worth understanding when interpreting
@@ -387,41 +446,42 @@ constants in one place. Not done in this pass.
    Neither is done in this pass; not blocking for the iso-IPC research
    question.
 
-## Changes made in this pass
+## Changes made in this pass (17-bit immediate)
+
+The immediate field shrinks 32 → 17 b (16-bit value + 1 sign bit),
+cascading through every entry that carries an immediate.
 
 | File | Change |
 |---|---|
-| `sample_config_files/iq_cam.cfg` | Ports 5 RW + 10 search → **8 RW + 8 search** (gem5 non-super); default size 640 → 256 B (64 entries × 4 B, matches gem5 default); header rewritten with bit-level PRF tag derivation (10 b not 9 b) |
-| `sample_config_files/iq_cam_payload.cfg` | Entry 18 → **11 B** (81 bits, table above); ports 10 → **8** RW; default size 2880 → 704 B; bus width 144 → 88; header rewritten with full bit-level field table |
-| `sample_config_files/diq_sram.cfg` | Entry 18 → **13 B** (103 bits, table above); default size 720 → 182 B (14 entries × 13 B, matches gem5 default); bus width 144 → 104; header rewritten with full bit-level field table AND the corrected statement that the DIQ holds memory operations |
-| `design_point_sweep.sh` | `IQ_ENTRY_BYTES` default 22 → 15; `DIQ_ENTRY_BYTES` 18 → 13; ports 5/10/10/4 → 8/8/8/4; `diq_wakeup_e_nJ` divisor changes 144 → 104; header rewritten |
-| `iq_cam_sweep.sh` | RW default 5 → 8; search default 10 → 8; header updated |
-| `iq_cam_payload_sweep.sh` | Width default 18 → 11; ports 10 → 8; header updated |
-| `diq_sram_sweep.sh` | Width default 18 → 13; header updated to note DIQ holds mem ops |
+| `sample_config_files/iq_cam.cfg` | No change (CAM has no immediate field). |
+| `sample_config_files/iq_cam_payload.cfg` | Header bit table: immediate 32 → 17 b, total 85 → 70 b. Body: `-size` 704 → 576 (64 × 9 B), `-block size` 11 → 9, `-output/input bus width` 88 → 72. |
+| `sample_config_files/diq_sram.cfg` | Header bit table: immediate 32 → 17 b, total 106 → 91 b. Body: `-size` 196 → 168 (14 × 12 B), `-block size` 14 → 12, `-output/input bus width` 112 → 96. |
+| `design_point_sweep.sh` | `IQ_ENTRY_BYTES` default 15 → 13; `DIQ_ENTRY_BYTES` 14 → 12; `diq_wakeup_e_nJ` divisor 112 → 96 (= 12 × 8). Header bit-derivation comments updated. |
+| `iq_cam_sweep.sh` | No change (CAM unaffected). |
+| `iq_cam_payload_sweep.sh` | `PAYLOAD_WIDTH_BYTES` default 11 → 9. Header bit table updated. |
+| `diq_sram_sweep.sh` | `ENTRY_WIDTH_BYTES` default 14 → 12. Header bit table updated. |
+| `zontext/modeling-plan.md` (this file) | Both bit tables and file map updated; entry-width history extended; SuperMagnaOpus deltas recomputed under 17-b immediate; combinator divisor and re-derive section updated. |
 
 ## How to re-derive the results after these changes
 
 ```
 cd /home/crd/master/cacti
-./design_point_sweep.sh                                 # full 54-point gem5 grid, new defaults (15 B IQ / 13 B DIQ)
-./design_point_sweep.sh 22 18 22                        # reproduce previous-pass byte widths for comparison
+./design_point_sweep.sh                                 # full 54-point gem5 grid, new defaults (13 B IQ / 12 B DIQ)
+./design_point_sweep.sh 15 14 22                        # reproduce previous-pass widths (32-b imm) for comparison
 ./design_point_sweep.sh --pairs "160-0 80-80 40-120"    # only the points you care about
 ./design_point_sweep.sh --pairs-file iso_ipc_points.txt # one IQ-DIQ pair per line (# comments allowed)
 ```
 
-Expected effects vs the previous CSV:
+Expected effects vs the previous-pass CSV (which used the 32-b
+immediate and therefore 11 B payload / 14 B DIQ):
 
-- **iq_cam.cfg numbers**: small shift — entry width unchanged (4 B), port
-  total goes 15 → 16, so leakage moves slightly. CAM search energy goes
-  *down* a bit because there are 8 search ports instead of 10 (fewer
-  match-lines firing per broadcast).
-- **iq_cam_payload.cfg leakage / area**: drops substantially (entry
-  18 → 11 B, ports 10 → 8).
-- **diq_sram.cfg leakage / area**: drops (entry 18 → 13 B, ports unchanged
-  at 4).
-- **diq_wakeup_e_nJ**: divisor changes 144 → 104, so per-event energy rises
-  ~38%, but `diq_write_e_nJ` also shrinks because of the narrower row —
-  net change in `diq_wakeup_e_nJ` depends on CACTI's port/width scaling.
+- **iq_cam.cfg numbers**: no change (CAM has no immediate field).
+- **iq_cam_payload.cfg leakage / area**: drops ~15–20% (entry 11 → 9 B,
+  two fewer bytes of cell storage on the dominant array).
+- **diq_sram.cfg leakage / area**: drops ~12–15% (entry 14 → 12 B).
+- **diq_wakeup_e_nJ**: full-row `diq_write_e_nJ` shrinks (smaller row),
+  and divisor changes 112 → 96 (≈14% smaller). Net per-event wakeup is
+  roughly flat or slightly down; depends on CACTI's port/width scaling.
 
 ## Reading the output: printed table vs CSV
 
@@ -536,9 +596,9 @@ Wall time = `cycles / clock_GHz` (the magna config uses 3.3 GHz —
   match-line fires, it directly drives the corresponding per-source ready
   bit in the payload (a single cell flip, not a write-port access). The
   energy of charging the match line is already inside `iq_cam_search_e`;
-  the additional cell-flip energy is small (~1 bit out of 88 bits of
+  the additional cell-flip energy is small (~1 bit out of 72 bits of
   payload row) and is not modeled separately. This is the IQ-side analog
-  of the `diq_wakeup_e ≈ diq_write_e / 104` approximation.
+  of the `diq_wakeup_e ≈ diq_write_e / 96` approximation.
 
 ### Pulling `N_*` from gem5 stats — DIQ now includes memory ops
 
@@ -574,7 +634,7 @@ actually does.
    `./design_point_sweep.sh --pairs "<IQ>-<DIQ> ..."` (or `--pairs-file
    path`) to evaluate just those points. Combine with positional args for
    non-default entry widths or tech node:
-   `./design_point_sweep.sh 15 13 22 --pairs "90-70 70-90"`.
+   `./design_point_sweep.sh 13 12 22 --pairs "90-70 70-90"`.
 4. **Combine** per the formula above. Produce per-workload tuples of
    `(IPC_rel, E_total_rel, area_rel)` against the baseline.
 5. **Headline result:** per-workload `(area, energy)` reduction at

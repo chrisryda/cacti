@@ -11,13 +11,14 @@
 # Usage:
 #   ./iq_cam_payload_sweep.sh [payload_width_bytes] [num_ports] [tech_nm]
 #
-# Defaults (gem5 non-super calibration; see iq_cam_payload.cfg header for
-# the bit-level field table):
-#   payload_width_bytes = 11  (82 bits: 3 src-ready + 10 dest tag + 7 OpClass
-#                              + 5 FU port + 8 ROB ptr + 5 LSQ ptr + 32 imm
-#                              + 3 status + 9 DIQ-consumer back-ptr → 11 B)
-#   num_ports           = 8   (gem5 dispatch/issue/wb width = 8,
-#                              BaseO3CPU.py:122-124)
+# Defaults (MagnaOpus / gem5 non-super calibration; see sic_parvis.py:127-160
+# and iq_cam_payload.cfg header for the bit-level field table):
+#   payload_width_bytes = 9   (70 bits: 3 src-ready + 10 dest tag + 7 OpClass
+#                              + 5 FU port + 9 ROB ptr (352 ROB) + 7 LSQ ptr
+#                              (LQ=128/SQ=72) + 17 imm (16+sign) + 3 status
+#                              + 9 DIQ-consumer back-ptr → 9 B)
+#   num_ports           = 8   (issue=wb=commit=8 sic_parvis.py:133-135;
+#                              dispatch=8 inherited from BaseO3CPU)
 #   tech_nm             = 22  (CACTI floor; Ice Lake is Intel 10 nm)
 #
 # Output:
@@ -34,7 +35,7 @@ BASE_CFG="${SCRIPT_DIR}/sample_config_files/iq_cam_payload.cfg"
 RESULTS_CSV="${SCRIPT_DIR}/iq_cam_payload_sweep_results.csv"
 TMP_CFG=$(mktemp /tmp/iq_cam_payload_cacti_XXXXXX.cfg)
 
-PAYLOAD_WIDTH_BYTES=${1:-11}
+PAYLOAD_WIDTH_BYTES=${1:-9}
 NUM_PORTS=${2:-8}
 TECH_NM=${3:-22}
 TECH_UM=$(echo "scale=3; ${TECH_NM}/1000" | bc)

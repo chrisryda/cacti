@@ -12,14 +12,15 @@
 # Usage:
 #   ./diq_sram_sweep.sh [entry_width_bytes] [num_ports] [tech_nm]
 #
-# Defaults (gem5 non-super calibration; see diq_sram.cfg header for full
-# bit-level field table):
-#   entry_width_bytes = 13  (103 bits: 30 src tags + 3 src-ready + 10 dest
-#                            + 7 OpClass + 5 FU port + 8 ROB ptr + 5 LSQ ptr
-#                            + 32 imm + 3 status → 13 B. Source PRF tags
-#                            live in the entry — read at issue to drive PRF —
-#                            but as plain SRAM cells, not CAM cells. The DIQ
-#                            holds memory ops, so LSQ pointer is included.)
+# Defaults (MagnaOpus / gem5 non-super calibration; see sic_parvis.py:127-160
+# and diq_sram.cfg header for full bit-level field table):
+#   entry_width_bytes = 12  (91 bits: 30 src tags + 3 src-ready + 10 dest
+#                            + 7 OpClass + 5 FU port + 9 ROB ptr (352 ROB)
+#                            + 7 LSQ ptr (LQ=128/SQ=72) + 17 imm (16+sign)
+#                            + 3 status → 12 B. Source PRF tags live in the
+#                            entry — read at issue to drive PRF — but as
+#                            plain SRAM cells, not CAM cells. The DIQ holds
+#                            memory ops, so LSQ pointer is included.)
 #   num_ports         = 4   (side queue: ~2 dispatch writes + ~2 issue reads
 #                            per cycle; pipeline-width port counts (8+) inflate
 #                            peripheral leakage/area)
@@ -44,7 +45,7 @@ BASE_CFG="${SCRIPT_DIR}/sample_config_files/diq_sram.cfg"
 RESULTS_CSV="${SCRIPT_DIR}/diq_sram_sweep_results.csv"
 TMP_CFG=$(mktemp /tmp/iq_cacti_XXXXXX.cfg)
 
-ENTRY_WIDTH_BYTES=${1:-13}
+ENTRY_WIDTH_BYTES=${1:-12}
 NUM_PORTS=${2:-4}
 TECH_NM=${3:-22}
 TECH_UM=$(echo "scale=3; ${TECH_NM}/1000" | bc)

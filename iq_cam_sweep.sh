@@ -10,12 +10,14 @@
 # Usage:
 #   ./iq_cam_sweep.sh [tag_width_bytes] [rw_ports] [search_ports] [tech_nm]
 #
-# Defaults (gem5 non-super calibration):
-#   tag_width_bytes = 4   (3 src PRF tags × 10 bits = 30 bits → 4 B; 802 phys
-#                          regs total = 256 int + 256 fp + 256 vec + 32 vp + 2 mat)
-#   rw_ports        = 8   (gem5 dispatchWidth = 8, BaseO3CPU.py:122)
-#   search_ports    = 8   (gem5 wbWidth      = 8, BaseO3CPU.py:124 — one
-#                          broadcast bus per writeback lane)
+# Defaults (MagnaOpus / gem5 non-super calibration; see sic_parvis.py:127-160):
+#   tag_width_bytes = 4   (3 src PRF tags × 10 bits = 30 bits → 4 B; 794 phys
+#                          regs total = 280 int + 224 fp + 256 vec + 32 vp + 2
+#                          mat. int/fp from sic_parvis.py:144-145; vec/vp/mat
+#                          inherited from BaseO3CPU defaults)
+#   rw_ports        = 8   (dispatchWidth = 8, inherited from BaseO3CPU)
+#   search_ports    = 8   (wbWidth = 8, sic_parvis.py:134 — one broadcast bus
+#                          per writeback lane)
 #   tech_nm         = 22  (CACTI floor; Ice Lake is Intel 10 nm)
 #
 # Output:

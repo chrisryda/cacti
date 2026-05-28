@@ -31,33 +31,34 @@
 #   -h | --help             Print this header and exit.
 #
 # Positional args (legacy; still supported for backward compatibility):
-#   1: iq_entry_bytes  (default 15)
-#   2: diq_entry_bytes (default 13)
+#   1: iq_entry_bytes  (default 13)
+#   2: diq_entry_bytes (default 12)
 #   3: tech_nm         (default 22)
 #
-# Defaults (gem5 non-super calibration; see modeling-plan.md for the
-# bit-level field tables behind these widths):
-#   iq_entry_bytes  = 15   (4 B tag CAM + 11 B payload SRAM. Tag CAM holds
+# Defaults (MagnaOpus / gem5 non-super calibration; see sic_parvis.py:127-160
+# and modeling-plan.md for the bit-level field tables behind these widths):
+#   iq_entry_bytes  = 13   (4 B tag CAM + 9 B payload SRAM. Tag CAM holds
 #                           3 src PRF tags × 10 bits = 30 b → 4 B. Payload
 #                           holds the rest: dest tag + opcode + FU port +
-#                           ROB ptr + LSQ ptr + immediate + status + DIQ-
-#                           consumer back-ptr ≈ 81 b → 11 B.)
-#   diq_entry_bytes = 13   (103 b: 3 src tags + ready bits + dest + opcode
-#                           + FU port + ROB ptr + LSQ ptr + immediate +
-#                           status. Same logical fields as IQ entry minus
-#                           the producer-side DIQ back-pointer, stored in
-#                           plain SRAM cells. DIQ holds memory ops, so the
-#                           LSQ ptr is included.)
+#                           9 b ROB ptr (352 ROB) + 7 b LSQ ptr (LQ=128 /
+#                           SQ=72) + 17 b immediate (16+sign) + status +
+#                           DIQ-consumer back-ptr = 70 b → 9 B.)
+#   diq_entry_bytes = 12   (91 b: 3 src tags + ready bits + dest + opcode
+#                           + FU port + 9 b ROB ptr + 7 b LSQ ptr + 17 b
+#                           immediate (16+sign) + status. Same logical
+#                           fields as IQ entry minus the producer-side DIQ
+#                           back-pointer, stored in plain SRAM cells. DIQ
+#                           holds memory ops, so the LSQ ptr is included.)
 #   tech_nm         = 22   (CACTI floor; Ice Lake is Intel 10 nm)
 #
-# Port counts (gem5 non-super, BaseO3CPU.py:122-124):
+# Port counts (MagnaOpus, sic_parvis.py:133-135 + BaseO3CPU defaults):
 #   IQ tag CAM:  8 RW (dispatch) + 8 search (writeback broadcast buses)
 #   IQ payload: 8 RW (issue + dispatch + WB share these)
 #   DIQ:        4 RW (side-queue traffic, NOT pipeline-width)
 #
 # Wakeup-energy approximation: the CSV column diq_wakeup_e_nJ is computed as
 # diq_write_e_nJ / (diq_entry_bytes * 8), modeling a single ready-bit flip
-# as 1/N of a full row write. At the 13 B default, divisor = 104. Rough
+# as 1/N of a full row write. At the 12 B default, divisor = 96. Rough
 # (bitline drivers don't scale linearly) but ~10× closer to truth than
 # charging the full row write per wakeup event. Downstream activity-weighted
 # energy: total = N_dispatch * diq_write_e + N_wakeup * diq_wakeup_e
@@ -72,8 +73,8 @@ RESULTS_CSV="${SCRIPT_DIR}/design_point_results.csv"
 
 usage() { sed -n '2,/^$/p' "$0"; }
 
-IQ_ENTRY_BYTES=15
-DIQ_ENTRY_BYTES=13
+IQ_ENTRY_BYTES=13
+DIQ_ENTRY_BYTES=12
 TECH_NM=22
 PAIRS_OVERRIDE=""
 
@@ -97,11 +98,11 @@ done
 TECH_UM=$(echo "scale=3; ${TECH_NM}/1000" | bc)
 
 # Architectural constants matching iq_cam.cfg / iq_cam_payload.cfg defaults.
-# Tag CAM width: 3 src PRF tags × 10 bits → 30 bits → 4 B (gem5 802 phys regs)
+# Tag CAM width: 3 src PRF tags × 10 bits → 30 bits → 4 B (MagnaOpus 794 phys regs)
 IQ_TAG_BYTES=4
 # Payload width: full entry minus tag bits
 IQ_PAYLOAD_BYTES=$(( IQ_ENTRY_BYTES - IQ_TAG_BYTES ))
-# Port assumptions (gem5 non-super: dispatch/issue/wb width = 8)
+# Port assumptions (MagnaOpus / gem5 non-super: dispatch=8 inherited, issue/wb=8)
 IQ_RW_PORTS=8         # dispatch writes
 IQ_SEARCH_PORTS=8     # result-broadcast buses (one per WB lane)
 IQ_PAYLOAD_PORTS=8    # issue read + dispatch write + WB update share these
