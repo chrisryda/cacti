@@ -56,13 +56,10 @@
 #   IQ payload: 8 RW (issue + dispatch + WB share these)
 #   DIQ:        4 RW (side-queue traffic, NOT pipeline-width)
 #
-# Wakeup-energy approximation: the CSV column diq_wakeup_e_nJ is computed as
-# diq_write_e_nJ / (diq_entry_bytes * 8), modeling a single ready-bit flip
-# as 1/N of a full row write. At the 12 B default, divisor = 96. Rough
-# (bitline drivers don't scale linearly) but ~10× closer to truth than
-# charging the full row write per wakeup event. Downstream activity-weighted
-# energy: total = N_dispatch * diq_write_e + N_wakeup * diq_wakeup_e
-# + N_issue * diq_read_e (where N_wakeup is gem5 deltaWakeupMap firing count).
+# Wakeup energy (single ready-bit flip in the DIQ on producer completion) is
+# NOT modeled here. A previous version emitted a diq_wakeup_e_nJ column as
+# diq_write_e / (entry_bits) but it has been dropped from the combiner —
+# see modeling-plan.md "DIQ indexed-wakeup energy (not included)".
 
 set -euo pipefail
 
@@ -106,7 +103,7 @@ IQ_PAYLOAD_BYTES=$(( IQ_ENTRY_BYTES - IQ_TAG_BYTES ))
 IQ_RW_PORTS=8         # dispatch writes
 IQ_SEARCH_PORTS=8     # result-broadcast buses (one per WB lane)
 IQ_PAYLOAD_PORTS=8    # issue read + dispatch write + WB update share these
-DIQ_PORTS=4           # side queue: ~2 dispatch + ~2 issue per cycle (wakeup is single-bit; see diq_wakeup_e_nJ)
+DIQ_PORTS=4           # side queue: ~2 dispatch + ~2 issue per cycle (wakeup is a single-bit flip, not modeled here)
 
 # Default design-point grid — mirrors the gem5 diq.sweep.sh CONFIGS array.
 # Override with --pairs or --pairs-file.
@@ -160,7 +157,7 @@ parse_sram() {
 }
 
 # CSV header
-echo "budget,iq_size,diq_size,iq_cam_search_e_nJ,iq_cam_leak_mW,iq_cam_area_mm2,iq_payload_read_e_nJ,iq_payload_write_e_nJ,iq_payload_leak_mW,iq_payload_area_mm2,diq_read_e_nJ,diq_write_e_nJ,diq_wakeup_e_nJ,diq_leak_mW,diq_area_mm2,total_leak_mW,total_area_mm2" \
+echo "budget,iq_size,diq_size,iq_cam_search_e_nJ,iq_cam_leak_mW,iq_cam_area_mm2,iq_payload_read_e_nJ,iq_payload_write_e_nJ,iq_payload_leak_mW,iq_payload_area_mm2,diq_read_e_nJ,diq_write_e_nJ,diq_leak_mW,diq_area_mm2,total_leak_mW,total_area_mm2" \
     > "${RESULTS_CSV}"
 
 # Printed-table header
@@ -246,20 +243,18 @@ for PAIR in "${CONFIGS[@]}"; do
             if echo "${OUTPUT}" | grep -qiE "cache size must|invalid|error" || \
                ! echo "${OUTPUT}" | grep -q "Access time"; then
                 DIQ_STATUS="FAIL"
-                DIQ_READ_E="" DIQ_WRITE_E="" DIQ_WAKEUP_E="" DIQ_LEAK="" DIQ_AREA=""
+                DIQ_READ_E="" DIQ_WRITE_E="" DIQ_LEAK="" DIQ_AREA=""
             else
                 DIQ_STATUS="OK"
                 parse_sram
                 DIQ_READ_E="${SRAM_READ_E}"
                 DIQ_WRITE_E="${SRAM_WRITE_E}"
-                # Wakeup = single ready-bit flip ≈ 1/N of a full row write
-                DIQ_WAKEUP_E=$(echo "${DIQ_WRITE_E} / (${DIQ_ENTRY_BYTES} * 8)" | bc -l)
                 DIQ_LEAK="${SRAM_LEAK}"
                 DIQ_AREA="${SRAM_AREA}"
             fi
         else
             # DIQ=0: no run, zero contribution
-            DIQ_READ_E="0" DIQ_WRITE_E="0" DIQ_WAKEUP_E="0" DIQ_LEAK="0" DIQ_AREA="0"
+            DIQ_READ_E="0" DIQ_WRITE_E="0" DIQ_LEAK="0" DIQ_AREA="0"
             DIQ_STATUS="OK"
         fi
 
@@ -278,7 +273,7 @@ for PAIR in "${CONFIGS[@]}"; do
         fi
 
         # CSV row
-        echo "${B},${IQ},${DIQ},${IQCAM_SEARCH_E},${IQCAM_LEAK},${IQCAM_AREA},${IQPAY_READ_E},${IQPAY_WRITE_E},${IQPAY_LEAK},${IQPAY_AREA},${DIQ_READ_E},${DIQ_WRITE_E},${DIQ_WAKEUP_E},${DIQ_LEAK},${DIQ_AREA},${TOTAL_LEAK},${TOTAL_AREA}" \
+        echo "${B},${IQ},${DIQ},${IQCAM_SEARCH_E},${IQCAM_LEAK},${IQCAM_AREA},${IQPAY_READ_E},${IQPAY_WRITE_E},${IQPAY_LEAK},${IQPAY_AREA},${DIQ_READ_E},${DIQ_WRITE_E},${DIQ_LEAK},${DIQ_AREA},${TOTAL_LEAK},${TOTAL_AREA}" \
             >> "${RESULTS_CSV}"
 
         # Pretty-print row (CAM search energy in pJ for readability)

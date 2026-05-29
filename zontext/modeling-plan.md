@@ -194,10 +194,10 @@ CAM search dominates IQ dynamic energy and why shrinking the tag CAM is the
 energy lever the DIQ is designed to pull.
 
 This is why `design_point_results.csv` keeps `iq_cam_search_e_nJ`,
-`iq_payload_read_e_nJ`, `iq_payload_write_e_nJ`, `diq_read_e_nJ`,
-`diq_write_e_nJ`, and `diq_wakeup_e_nJ` as separate columns rather than
-summing them. When you combine with gem5 stats you weight each one by its
-own per-cycle event count — see the
+`iq_payload_read_e_nJ`, `iq_payload_write_e_nJ`, `diq_read_e_nJ`, and
+`diq_write_e_nJ` as separate columns rather than summing them. When you
+combine with gem5 stats you weight each one by its own per-cycle event
+count — see the
 [activity-weighted combinator](#producing-final-results-the-activity-weighted-combinator)
 later in this document.
 
@@ -310,28 +310,30 @@ The DIQ stays at 4 RW because it's a side queue — its traffic is the
 delta-candidate fraction of dispatch (≈2/cycle peak) plus the woken
 fraction of issue (≈2/cycle peak), not pipeline-width.
 
-## Wakeup-energy approximation
+## DIQ indexed-wakeup energy (not included)
 
-The hardware DIQ wakeup operation is a single-bit flip of the delta
-source's ready bit — not a full payload write. The full row-write energy
-overstates wakeup cost by 10–20× (bitline drivers don't scale perfectly
-linearly with bit count, but flipping 1 bit ≠ flipping 96).
+When a producer completes, the hardware flips one ready bit in its delta
+consumer's DIQ entry — an indexed single-bit write driven by the
+producer's DIQ back-pointer, not a CAM broadcast and not a full row
+write. (See `inst_queue.hh:426` `deltaWakeupMap` — simulator-side stand-in
+for the hardware's direct indexed write.)
 
-`design_point_sweep.sh` emits a separate `diq_wakeup_e_nJ` column computed
-as `diq_write_e_nJ / (diq_entry_bytes × 8)` — at the 12 B default,
-divisor = 96. This is an approximation, but ~10× closer to truth than
-charging the full row write. The full-row `diq_write_e_nJ` is still
-emitted for actual dispatch writes (which *do* write the full entry).
+CACTI does not natively model single-bit-flip energy: its
+`diq_write_e_nJ` is the full-row write cost, which would overstate
+wakeup by ~10–20× if charged per event. A previous version of
+`design_point_sweep.sh` emitted an approximate `diq_wakeup_e_nJ` column
+computed as `diq_write_e_nJ / (diq_entry_bytes × 8)` (linear bit-count
+scaling, ~10× closer to truth than the full-row figure but still rough —
+bitline driver energy doesn't scale perfectly linearly with bit count).
 
-Downstream activity-weighted DIQ dynamic energy:
-
-```
-diq_dyn_E = N_dispatch_to_diq * diq_write_e
-          + N_diq_wakeup       * diq_wakeup_e
-          + N_diq_issue        * diq_read_e
-```
-
-where `N_diq_wakeup` is the gem5 count of `deltaWakeupMap` firings.
+**As of this pass, the wakeup term is dropped from the combiner**
+(`E_DIQ_dyn` no longer contains `N_diq_wakeup × diq_wakeup_e`) and the
+`diq_wakeup_e_nJ` CSV column is gone. Rationale: the term was a rough
+approximation of a relatively small contributor — including it added
+modeling noise without changing the IQ-vs-DIQ qualitative comparison.
+A more rigorous wakeup-port model (distinguishing bitline-driver,
+wordline, and decode energy) could be revisited later if quantitative
+single-bit-flip energy becomes important.
 
 ## SuperMagnaOpus deltas (documentation only)
 
@@ -396,12 +398,11 @@ tag-CAM-byte constants in one place. Not done in this pass.
    (IQ vs DIQ at the same node) are unaffected. Scale analytically if
    absolute figures are needed.
 
-4. **Wakeup-port modeling.** The single-bit ready flip is approximated via
-   `diq_wakeup_e_nJ = diq_write_e_nJ / entry_bits`. Linear scaling; real
-   bitline-driver energy isn't perfectly linear in bit count. The
-   approximation is ~10× closer to truth than charging the full row-write
-   energy, but a more rigorous model would distinguish bitline driver
-   energy from wordline + decode energy.
+4. **DIQ single-bit wakeup energy not modeled.** Single-bit ready-flip
+   energy is dropped from the combiner — see "DIQ indexed-wakeup energy
+   (not included)" above. A more rigorous model (distinguishing bitline
+   driver, wordline, and decode energy) could be revisited if absolute
+   wakeup energy becomes important.
 
 5. **DIQ peripheral overhead vs cell storage.** Even at 12 B / 4 ports,
    small DIQ arrays carry non-trivial peripheral leakage because each port
@@ -456,7 +457,7 @@ cascading through every entry that carries an immediate.
 | `sample_config_files/iq_cam.cfg` | No change (CAM has no immediate field). |
 | `sample_config_files/iq_cam_payload.cfg` | Header bit table: immediate 32 → 17 b, total 85 → 70 b. Body: `-size` 704 → 576 (64 × 9 B), `-block size` 11 → 9, `-output/input bus width` 88 → 72. |
 | `sample_config_files/diq_sram.cfg` | Header bit table: immediate 32 → 17 b, total 106 → 91 b. Body: `-size` 196 → 168 (14 × 12 B), `-block size` 14 → 12, `-output/input bus width` 112 → 96. |
-| `design_point_sweep.sh` | `IQ_ENTRY_BYTES` default 15 → 13; `DIQ_ENTRY_BYTES` 14 → 12; `diq_wakeup_e_nJ` divisor 112 → 96 (= 12 × 8). Header bit-derivation comments updated. |
+| `design_point_sweep.sh` | `IQ_ENTRY_BYTES` default 15 → 13; `DIQ_ENTRY_BYTES` 14 → 12. Header bit-derivation comments updated. `diq_wakeup_e_nJ` column removed (term dropped from the combiner — see "DIQ indexed-wakeup energy (not included)"). |
 | `iq_cam_sweep.sh` | No change (CAM unaffected). |
 | `iq_cam_payload_sweep.sh` | `PAYLOAD_WIDTH_BYTES` default 11 → 9. Header bit table updated. |
 | `diq_sram_sweep.sh` | `ENTRY_WIDTH_BYTES` default 14 → 12. Header bit table updated. |
@@ -479,9 +480,6 @@ immediate and therefore 11 B payload / 14 B DIQ):
 - **iq_cam_payload.cfg leakage / area**: drops ~15–20% (entry 11 → 9 B,
   two fewer bytes of cell storage on the dominant array).
 - **diq_sram.cfg leakage / area**: drops ~12–15% (entry 14 → 12 B).
-- **diq_wakeup_e_nJ**: full-row `diq_write_e_nJ` shrinks (smaller row),
-  and divisor changes 112 → 96 (≈14% smaller). Net per-event wakeup is
-  roughly flat or slightly down; depends on CACTI's port/width scaling.
 
 ## Reading the output: printed table vs CSV
 
@@ -502,7 +500,7 @@ Three numbers fit on a terminal row. That's all the table gives you.
 
 ### CSV (`design_point_results.csv`) — the full set
 
-Six dynamic-energy columns; the table shows only one of them.
+Five dynamic-energy columns; the table shows only one of them.
 
 | CSV column | Per-event energy for ... | gem5 activity count it pairs with |
 |---|---|---|
@@ -511,7 +509,6 @@ Six dynamic-energy columns; the table shows only one of them.
 | `iq_payload_write_e_nJ` | Dispatch write of IQ payload | Dispatches to IQ |
 | `diq_read_e_nJ` | Issue read from DIQ | Issues from DIQ |
 | `diq_write_e_nJ` | Dispatch write to DIQ | Dispatches to DIQ |
-| `diq_wakeup_e_nJ` | Single ready-bit flip in DIQ (approx) | `deltaWakeupMap` firings |
 
 Plus the static and structural columns: `iq_cam_leak_mW`,
 `iq_cam_area_mm2`, `iq_payload_leak_mW`, `iq_payload_area_mm2`,
@@ -560,7 +557,6 @@ E_IQ_dyn  = N_broadcast       × iq_cam_search_e
           + N_diq_wakeup      × iq_payload_read_e   # back-ptr read at WB (see note)
 
 E_DIQ_dyn = N_dispatch_to_diq × diq_write_e
-          + N_diq_wakeup      × diq_wakeup_e
           + N_issue_from_diq  × diq_read_e
 
 E_static  = (iq_cam_leak + iq_payload_leak + diq_leak) × wall_time
@@ -583,22 +579,24 @@ Wall time = `cycles / clock_GHz` (the magna config uses 3.3 GHz —
   When an IQ producer's writeback fires a DIQ wakeup, it must read its own
   IQ payload entry to retrieve the 9-bit DIQ-consumer back-pointer (the
   field at +9 b per IQ entry that we added to model the indexed-wakeup
-  mechanism). This is the dual on the producer side of the DIQ's
-  `diq_wakeup_e` write on the consumer side. In real silicon the writeback
-  path already drives many control lines from the producer's slot, so the
-  back-ptr columns may ride along free of marginal cost — but charging a
-  full payload read per wakeup is a defensible upper bound. Drop the term
-  for a tighter (and probably more realistic) lower bound, or keep it for
-  an upper bound. The energy delta between the two is small relative to
-  `iq_cam_search_e × N_broadcast`.
+  mechanism). In real silicon the writeback path already drives many
+  control lines from the producer's slot, so the back-ptr columns may ride
+  along free of marginal cost — but charging a full payload read per
+  wakeup is a defensible upper bound. Drop the term for a tighter (and
+  probably more realistic) lower bound, or keep it for an upper bound.
+  The energy delta between the two is small relative to
+  `iq_cam_search_e × N_broadcast`. (Note: the symmetric DIQ-side
+  single-bit ready flip — the consumer-side cell write that this
+  back-ptr read enables — is no longer included; see "DIQ
+  indexed-wakeup energy (not included)".)
 
 - **CAM-driven payload ready-bit flip** is implicit. When a CAM search
   match-line fires, it directly drives the corresponding per-source ready
   bit in the payload (a single cell flip, not a write-port access). The
   energy of charging the match line is already inside `iq_cam_search_e`;
   the additional cell-flip energy is small (~1 bit out of 72 bits of
-  payload row) and is not modeled separately. This is the IQ-side analog
-  of the `diq_wakeup_e ≈ diq_write_e / 96` approximation.
+  payload row) and is not modeled separately — same rationale as the
+  dropped DIQ single-bit wakeup term.
 
 ### Pulling `N_*` from gem5 stats — DIQ now includes memory ops
 
