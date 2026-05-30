@@ -504,7 +504,7 @@ Five dynamic-energy columns; the table shows only one of them.
 
 | CSV column | Per-event energy for ... | gem5 activity count it pairs with |
 |---|---|---|
-| `iq_cam_search_e_nJ` | Tag-CAM associative search (shown in table) | Result broadcasts (≈ FU completions per cycle) |
+| `iq_cam_search_e_nJ` | Tag-CAM associative search (shown in table) | Result tag broadcasts — `iq.camBroadcasts` (see [Where each gem5 stat is incremented](#where-each-gem5-stat-is-incremented-and-why-there)) |
 | `iq_payload_read_e_nJ` | Issue read of IQ payload | Issues from IQ |
 | `iq_payload_write_e_nJ` | Dispatch write of IQ payload | Dispatches to IQ |
 | `diq_read_e_nJ` | Issue read from DIQ | Issues from DIQ |
@@ -617,6 +617,101 @@ stats:
 If a downstream extraction script previously applied a mem-op filter to
 DIQ counts, remove that filter so the energy accounting matches what gem5
 actually does.
+
+### Where each gem5 stat is incremented (and why there)
+
+All counters live in `src/cpu/o3/inst_queue.cc`. Each modeling stat has
+exactly **one** increment site (verified by grep), so there is no
+double-counting. The placement of every counter was chosen so that one
+increment maps to exactly one real hardware event — a port access, a CAM
+search, or a payload read — and so that squashed/no-op work is *not*
+charged energy it never spent in silicon.
+
+| `N_*` term | gem5 stat | File:line | Fires when | HW event |
+|---|---|---|---|---|
+| `N_broadcast` (HW-faithful) | `iq.camBroadcasts` | `inst_queue.cc:1212` | once per non-fixed-mapping dest reg, in the `wakeDependents()` dest-reg loop, past the fixed-mapping and pinned-write guards, before the dependents `while` loop | one tag-CAM associative search (result-bus tag drive) |
+| `N_broadcast` (legacy proxy) | `iq.{int,fp,vec}InstQueueWakeupAccesses` | `inst_queue.cc:1139/1141/1143` | once per `wakeDependents()` call (i.e. per executed writeback) | per-writeback proxy — see note below |
+| `N_dispatch_to_iq` | `iq.instsAdded` + `iq.nonSpecInstsAdded` | `inst_queue.cc:714` (regular `insert()` branch) + `:777` (`insertNonSpec()`) | when an inst is written into the regular IQ payload (`--freeEntries`) | IQ payload + tag write port |
+| `N_dispatch_to_diq` | `iq.deltaInstsAdded` | `inst_queue.cc:672` (delta branch of `insert()`) | when an inst is written into the DIQ (`--freeDeltaEntries`) | DIQ write port |
+| `N_issue_from_iq` | `iq.issuesFromIQ` | `inst_queue.cc:1045` | in `scheduleReadyInsts()` after FU grant + `setIssued()`, when `!isInDeltaIQ()` | IQ payload read at issue |
+| `N_issue_from_diq` | `iq.issuesFromDIQ` | `inst_queue.cc:1043` | same block, when `isInDeltaIQ()` | DIQ read at issue |
+| `N_diq_wakeup` | `iq.diqWakeupEvents` | `inst_queue.cc:1301` | once per producer writeback that wakes ≥1 **live** delta consumer via `deltaWakeupMap` | IQ-payload back-pointer read at WB |
+| *(audit only)* | `iq.diqWakeupConsumers` | `inst_queue.cc:1293` | once per **live** delta consumer woken | DIQ single-bit ready flip (dropped from combiner) |
+| `cycles` | `cpu.numCycles` | `cpu.cc:369` (`++` per tick) / `:1321` (quiesce) | each clock cycle | wall-time for `E_static` |
+
+#### Why `camBroadcasts` is the HW-faithful `N_broadcast`
+
+The legacy `{int,fp,vec}InstQueueWakeupAccesses` counters increment **once
+per `wakeDependents()` call**, i.e. once per executed non-squashed
+instruction. That is a convenient proxy ("≈ FU completions per cycle") but
+it is not what the tag CAM actually does:
+
+- It **over-counts** writebacks that produce *no register result* (plain
+  stores, unconditional branches): they drive no result tag, so no CAM
+  search happens, yet they still bump the legacy counter.
+- It **under-counts** writebacks that produce *more than one* register
+  result (e.g. an ARM instruction writing a GPR **and** the NZCV flags):
+  HW drives two tags / two searches, the legacy counter records one.
+
+`camBroadcasts` fixes both by counting **one search per non-fixed-mapping
+destination register that is actually driven onto the CAM**. It is placed
+in the `wakeDependents()` destination-register loop, *after* the
+`isFixedMapping()` `continue` and the pinned-writes `continue` (so deferred
+pinned tags and fixed-mapping regs are correctly skipped) and *before* the
+`while (dep_inst)` dependent-wakeup loop.
+
+Placing it **before** the `while` loop is essential and is the textbook
+CAM model: a tag CAM is *associative* — the producer drives its tag onto
+the result bus **once** and every entry's comparator searches in parallel
+during that single broadcast. The search energy is incurred per tag drive,
+independent of the match count. Counting **inside** the `while` loop would
+instead tally the number of matching dependents (which is what
+`diqWakeupConsumers`/the `dependents` return value already measure) and
+would be wrong in both directions: a broadcast that matches **zero**
+waiting entries — very common, the producer drives the bus before any
+consumer has dispatched — would count 0 searches even though the CAM
+physically fired, while a high-fanout broadcast would be counted many
+times for its single search.
+
+Note that a producer whose only consumer sits in the DIQ **still** drives
+the regular IQ CAM (the broadcast is unconditional in HW; the match lines
+simply don't fire), so `camBroadcasts` correctly counts it. The DIQ's
+benefit is fewer IQ entries/ports, not a skipped broadcast — which is why
+`N_diq_wakeup × iq_payload_read_e` is charged **in addition to**
+`N_broadcast × iq_cam_search_e`, not instead of it.
+
+Use `camBroadcasts` for `N_broadcast` in the combiner. Keep the legacy
+`*WakeupAccesses` stats untouched (McPAT-style flows consume them as-is);
+they remain available as a sanity bound — `camBroadcasts` is typically
+*below* their sum because the zero-dest over-count dominates the multi-dest
+under-count for integer workloads.
+
+#### Why squashed delta consumers are excluded from `diqWakeupEvents`/`diqWakeupConsumers`
+
+In `wakeDependents()` the actual delta wakeup work (`markSrcRegReady`,
+`addIfReady`, `deltaInstList` removal) is gated on
+`if (!delta_inst->isSquashed())`. A squashed consumer's DIQ entry was
+already invalidated and freed by `doSquash()`, so at the producer's
+writeback there is no live entry to read a back-pointer for and no ready
+bit to flip — no energy event. The stats therefore sit **inside** that
+guard: `diqWakeupConsumers` counts only real ready-bit flips, and
+`diqWakeupEvents` increments only when the producer woke ≥1 live consumer
+(tracked by a local `woke_live_consumer` flag), so an entry whose consumers
+were all squashed charges no phantom back-pointer read. This mirrors the
+regular dependency-graph path, where squashed consumers are already removed
+from `dependGraph` before their producer writes back.
+
+#### Identities that hold by construction
+
+- `issuesFromIQ + issuesFromDIQ == instsIssued` — both increment 1:1 with
+  `total_issued` in the same issue block; the squashed-issue path
+  `continue`s earlier and is counted only by `squashedInstsIssued`.
+- `instsAdded + nonSpecInstsAdded + deltaInstsAdded` partitions every
+  IQ/DIQ write across three mutually exclusive insert branches.
+- `diqWakeupEvents ≤ diqWakeupConsumers ≤ deltaInstsAdded` (modulo squash).
+- `camBroadcasts ≤ (int+fp+vec)InstQueueWakeupAccesses` on integer-heavy
+  workloads (the store/branch over-count of the legacy proxy outweighs the
+  multi-dest under-count).
 
 ### End-to-end procedure for the iso-IPC story
 
